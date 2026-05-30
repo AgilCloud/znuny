@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.env.*
+.secrets/
+backups/
+docker-compose*.yml
+docker-compose*.yaml
+README.md
+**/.DS_Store
+**/__pycache__/
+**/*.pyc
+tmp/
+var/

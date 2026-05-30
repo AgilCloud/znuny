@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: znuny-ci
+  DOCKERFILE: docker/Dockerfile
+
+jobs:
+  docker:
+    name: Docker validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create local CI secrets
+        run: |
+          set -euo pipefail
+
+          secrets_dir="$RUNNER_TEMP/compose-secrets"
+          mkdir -p "$secrets_dir"
+
+          db_password="$(openssl rand -hex 24)"
+          admin_password="$(openssl rand -hex 24)"
+          printf '%s' "$db_password" > "$secrets_dir/znuny_db_password"
+          printf '%s' "$admin_password" > "$secrets_dir/znuny_admin_password"
+
+          {
+            echo "COMPOSE_PROJECT_NAME=znuny-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "ZNUNY_HTTP_PORT=18080"
+            echo "ZNUNY_IMAGE=${IMAGE_NAME}:${GITHUB_SHA}"
+            echo "ZNUNY_DB_TYPE=postgresql"
+            echo "ZNUNY_DB_HOST=db"
+            echo "ZNUNY_DB_PORT=5432"
+            echo "ZNUNY_DB_NAME=znuny"
+            echo "ZNUNY_DB_USER=znuny"
+            echo "ZNUNY_ADMIN_USER=admin"
+            echo "ZNUNY_DB_PASSWORD_FILE=$secrets_dir/znuny_db_password"
+            echo "ZNUNY_ADMIN_PASSWORD_FILE=$secrets_dir/znuny_admin_password"
+          } > "$RUNNER_TEMP/compose.env"
+          chmod 600 "$RUNNER_TEMP/compose.env" "$secrets_dir/"*
+
+          echo "COMPOSE_ENV_FILE=$RUNNER_TEMP/compose.env" >> "$GITHUB_ENV"
+
+      - name: Validate Compose config
+        run: docker compose --env-file "$COMPOSE_ENV_FILE" config
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ env.DOCKERFILE }}
+          failure-threshold: error
+
+      - name: Build image without push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE }}
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Smoke test with Compose
+        run: |
+          set -euo pipefail
+
+          docker compose --env-file "$COMPOSE_ENV_FILE" up --build -d
+
+          deadline=$((SECONDS + 600))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            unhealthy="$(docker compose --env-file "$COMPOSE_ENV_FILE" ps --format json | jq -r 'select(.Health == "unhealthy") | .Name' | paste -sd ' ' -)"
+            if [ -n "$unhealthy" ]; then
+              echo "Unhealthy service(s): $unhealthy"
+              docker compose --env-file "$COMPOSE_ENV_FILE" ps
+              docker compose --env-file "$COMPOSE_ENV_FILE" logs --no-color
+              exit 1
+            fi
+
+            starting="$(docker compose --env-file "$COMPOSE_ENV_FILE" ps --format json | jq -r 'select(.Health == "starting") | .Name' | paste -sd ' ' -)"
+            exited="$(docker compose --env-file "$COMPOSE_ENV_FILE" ps --format json | jq -r 'select(.State == "exited" or .State == "dead") | .Name' | paste -sd ' ' -)"
+            if [ -n "$exited" ]; then
+              echo "Stopped service(s): $exited"
+              docker compose --env-file "$COMPOSE_ENV_FILE" ps
+              docker compose --env-file "$COMPOSE_ENV_FILE" logs --no-color
+              exit 1
+            fi
+
+            if [ -z "$starting" ]; then
+              if curl -fsS "http://127.0.0.1:18080/znuny/index.pl" >/dev/null; then
+                docker compose --env-file "$COMPOSE_ENV_FILE" ps
+                exit 0
+              fi
+            fi
+
+            docker compose --env-file "$COMPOSE_ENV_FILE" ps
+            sleep 10
+          done
+
+          echo "Timed out waiting for Compose services to become ready."
+          docker compose --env-file "$COMPOSE_ENV_FILE" ps
+          docker compose --env-file "$COMPOSE_ENV_FILE" logs --no-color
+          exit 1
+
+      - name: Validate Znuny daemon
+        run: |
+          set -euo pipefail
+
+          docker compose --env-file "$COMPOSE_ENV_FILE" exec -T -u znuny znuny \
+            /opt/znuny/bin/znuny.Console.pl Maint::Daemon::Summary \
+            | tee "$RUNNER_TEMP/znuny-daemon-summary.txt"
+
+          grep -q "Daemon is active" "$RUNNER_TEMP/znuny-daemon-summary.txt"
+
+      - name: Cleanup Compose
+        if: always() && env.COMPOSE_ENV_FILE != ''
+        run: docker compose --env-file "$COMPOSE_ENV_FILE" down --volumes --remove-orphans

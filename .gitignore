@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+.secrets/
+backups/
+tmp/
+var/
+.DS_Store
