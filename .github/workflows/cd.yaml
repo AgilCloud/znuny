@@ -69,8 +69,6 @@ jobs:
         platform:
           - linux/amd64
           - linux/arm64
-          - linux/ppc64le
-          - linux/s390x
 
     steps:
       - name: Checkout
@@ -104,6 +102,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ needs.metadata.outputs.labels }}
           outputs: type=image,name=${{ env.DOCKERHUB_REPOSITORY }},push-by-digest=true,name-canonical=true,push=true
+          network: host
           provenance: true
           sbom: true
 
