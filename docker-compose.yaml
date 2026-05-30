@@ -1,0 +1,89 @@
+name: ${COMPOSE_PROJECT_NAME:-znuny}
+
+services:
+  znuny:
+    image: ${ZNUNY_IMAGE:-agilcloud/znuny:7.1.6}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      ZNUNY_DB_TYPE: ${ZNUNY_DB_TYPE:-postgresql}
+      ZNUNY_DB_HOST: ${ZNUNY_DB_HOST:-db}
+      ZNUNY_DB_PORT: ${ZNUNY_DB_PORT:-5432}
+      ZNUNY_DB_NAME: ${ZNUNY_DB_NAME:-znuny}
+      ZNUNY_DB_USER: ${ZNUNY_DB_USER:-znuny}
+      ZNUNY_DB_PASSWORD_FILE: /run/secrets/znuny_db_password
+      ZNUNY_TIMEZONE: ${ZNUNY_TIMEZONE:-America/Bahia}
+      ZNUNY_LANGUAGE: ${ZNUNY_LANGUAGE:-pt_BR}
+      ZNUNY_ADMIN_USER: ${ZNUNY_ADMIN_USER:-admin}
+      ZNUNY_ADMIN_EMAIL: ${ZNUNY_ADMIN_EMAIL:-admin@localhost}
+      ZNUNY_ADMIN_PASSWORD_FILE: /run/secrets/znuny_admin_password
+      ZNUNY_FQDN: ${ZNUNY_FQDN:-helpdesk.example.com}
+      ZNUNY_HTTP_PORT: "8080"
+      ZNUNY_HTTPS: ${ZNUNY_HTTPS:-false}
+    ports:
+      - "${ZNUNY_HTTP_PORT:-8080}:8080"
+    volumes:
+      - znuny_data:/opt/znuny/var
+      - znuny_articles:/opt/znuny/var/article
+      - znuny_config:/opt/znuny/Kernel/Config/Files
+    secrets:
+      - znuny_db_password
+      - znuny_admin_password
+    networks:
+      - znuny_internal
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:8080/znuny/index.pl >/dev/null || exit 1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${ZNUNY_DB_NAME:-znuny}
+      POSTGRES_USER: ${ZNUNY_DB_USER:-znuny}
+      POSTGRES_PASSWORD_FILE: /run/secrets/znuny_db_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    secrets:
+      - znuny_db_password
+    networks:
+      - znuny_internal
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h 127.0.0.1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+networks:
+  znuny_internal:
+    driver: bridge
+
+volumes:
+  znuny_data:
+  znuny_articles:
+  znuny_config:
+  postgres_data:
+
+secrets:
+  znuny_db_password:
+    file: ${ZNUNY_DB_PASSWORD_FILE:-.secrets/znuny_db_password}
+  znuny_admin_password:
+    file: ${ZNUNY_ADMIN_PASSWORD_FILE:-.secrets/znuny_admin_password}
