@@ -11,11 +11,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: cd-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
+  DOCKERFILE: docker/Dockerfile
   DOCKERHUB_REPOSITORY: ${{ secrets.DOCKERHUB_REPOSITORY }}
-  RS_SHA256: ${{ vars.RS_SHA256 || '9c2518b737cf614fc1fb420dd34402b8c8628a87912f5442c8f7509da7113a63' }}
-  RS_VERSION: 6.1.2
-  RS_BUILD: 6123
 
 jobs:
   metadata:
@@ -28,22 +30,34 @@ jobs:
       json: ${{ steps.meta.outputs.json }}
 
     steps:
+      - name: Validate Docker Hub repository
+        run: |
+          set -euo pipefail
+          test -n "${DOCKERHUB_REPOSITORY}"
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.DOCKERHUB_REPOSITORY }}
           labels: |
-            org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.licenses=GPL-3.0-or-later
+            org.opencontainers.image.title=Znuny LTS
           tags: |
             type=raw,value=main,enable={{is_default_branch}}
             type=sha,prefix=sha-,format=short,enable={{is_default_branch}}
-            type=raw,value=${{ env.RS_VERSION }}-${{ env.RS_BUILD }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=${{ env.RS_VERSION }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Validate metadata tags
+        run: |
+          set -euo pipefail
+          test -n "${DOCKER_METADATA_OUTPUT_JSON}"
+          jq -e '.tags | length > 0' <<< "${DOCKER_METADATA_OUTPUT_JSON}" >/dev/null
+        env:
+          DOCKER_METADATA_OUTPUT_JSON: ${{ steps.meta.outputs.json }}
 
   build:
     name: Build ${{ matrix.platform }}
@@ -88,19 +102,19 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/Dockerfile
+          file: ${{ env.DOCKERFILE }}
           platforms: ${{ matrix.platform }}
           labels: ${{ needs.metadata.outputs.labels }}
-          build-args: |
-            RS_SHA256=${{ env.RS_SHA256 }}
           outputs: type=image,name=${{ env.DOCKERHUB_REPOSITORY }},push-by-digest=true,name-canonical=true,push=true
           provenance: true
           sbom: true
 
       - name: Export digest
         run: |
+          set -euo pipefail
           mkdir -p "$RUNNER_TEMP/digests"
           digest="${DIGEST#sha256:}"
+          test -n "$digest"
           touch "$RUNNER_TEMP/digests/$digest"
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -146,8 +160,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          tags="$(jq -r '.tags[] | "-t " + .' <<< "$DOCKER_METADATA_OUTPUT_JSON" | xargs)"
-          digests="$(printf '${{ env.DOCKERHUB_REPOSITORY }}@sha256:%s ' *)"
+          test -n "${DOCKERHUB_REPOSITORY}"
+          test -n "${DOCKER_METADATA_OUTPUT_JSON}"
+          jq -e '.tags | length > 0' <<< "${DOCKER_METADATA_OUTPUT_JSON}" >/dev/null
+
+          tags="$(jq -r '.tags[] | "-t " + .' <<< "${DOCKER_METADATA_OUTPUT_JSON}" | xargs)"
+          digests=""
+          for digest_file in *; do
+            digests="${digests}${DOCKERHUB_REPOSITORY}@sha256:${digest_file} "
+          done
+
+          test -n "$tags"
+          test -n "$digests"
           docker buildx imagetools create $tags $digests
         env:
           DOCKER_METADATA_OUTPUT_JSON: ${{ needs.metadata.outputs.json }}
@@ -160,4 +184,4 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.DOCKERHUB_REPOSITORY }}
           readme-filepath: README.md
-          short-description: ReportServer CE 6.1.2 Docker image with Tomcat 9, PostgreSQL, and Compose support.
+          short-description: Znuny LTS 7.1.6 Docker image with Apache, Perl, PostgreSQL client, and Compose support.
