@@ -75,6 +75,7 @@ jobs:
           push: false
           load: true
           tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          network: host
 
       - name: Smoke test with Compose
         run: |

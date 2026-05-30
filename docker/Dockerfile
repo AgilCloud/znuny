@@ -71,7 +71,10 @@ RUN set -eux; \
 WORKDIR /tmp
 
 RUN set -eux; \
-    curl -fsSLO "${ZNUNY_DOWNLOAD_URL%/}/${ZNUNY_PACKAGE}"; \
+    curl --fail --show-error --silent --location \
+        --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 \
+        --output "${ZNUNY_PACKAGE}" \
+        "${ZNUNY_DOWNLOAD_URL%/}/${ZNUNY_PACKAGE}"; \
     echo "${ZNUNY_SHA256}  ${ZNUNY_PACKAGE}" | sha256sum -c -; \
     mkdir -p /opt; \
     tar -xzf "${ZNUNY_PACKAGE}" -C /opt; \
