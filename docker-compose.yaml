@@ -57,6 +57,7 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - .secrets:/run/secrets
     secrets:
       - znuny_db_password
     networks:
